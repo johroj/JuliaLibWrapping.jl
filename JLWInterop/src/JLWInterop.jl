@@ -14,6 +14,7 @@ export CStrArray
 export CDict, CNTuple, COpt
 export JLWResult
 export @export_release_entrypoints
+export @register_opaque_carrier
 export @api
 
 """
@@ -625,6 +626,7 @@ CNTuple(t::T) where {T <: Tuple} = CNTuple{fieldcount(T), T}(t)
 
 include("result.jl")
 include("api.jl")
+include("opaque.jl")
 
 """
     @export_release_entrypoints
