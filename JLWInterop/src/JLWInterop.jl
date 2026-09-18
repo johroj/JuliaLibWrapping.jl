@@ -12,6 +12,7 @@ export JLWStatus, jlw_ok, jlw_error
 export CArray, CVector, CMatrix, CString
 export CStrArray
 export CDict, CNTuple, COpt
+export COpaque
 export JLWResult
 export @export_release_entrypoints
 export @register_opaque_carrier
@@ -633,7 +634,10 @@ include("opaque.jl")
 
 At module top level, emit the release functions required by owning carrier
 returns. `jlw_free` frees one allocation; `jlw_free_strings` frees an array of
-`CString`s and their buffers.
+`CString`s and their buffers; `jlw_free_opaque` releases the Julia object behind
+a [`COpaque`](@ref) handle. The three are emitted together, so a binding target
+reads one opt-in ("were the release entrypoints exported?") that covers every
+owning carrier, opaque handles included.
 """
 macro export_release_entrypoints()
     return esc(
@@ -646,6 +650,10 @@ macro export_release_entrypoints()
                     p::$(Ptr{CString{:owned}}), n::$(Int64),
                 )::$(Cvoid)
                 $(_free_strings)(p, n)
+                return nothing
+            end
+            Base.@ccallable function jlw_free_opaque(p::$(Ptr{Cvoid}))::$(Cvoid)
+                $(_free_opaque)(p)
                 return nothing
             end
         end

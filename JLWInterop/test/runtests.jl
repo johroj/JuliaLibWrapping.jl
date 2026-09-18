@@ -1874,6 +1874,70 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         @test_throws ArgumentError JLWInterop._zero_carrier(Vector{Float64})
     end
 
+    @testset "opaque carriers (COpaque)" begin
+        m = Module(:ApiOpaque)
+        Core.eval(m, :(using JLWInterop))
+        # A mutable and an immutable opaque type: the immutable one exercises
+        # the RefValue storage path.
+        Core.eval(m, :(mutable struct Model; id::Int; end))
+        Core.eval(m, :(struct Point; x::Float64; y::Float64; end))
+        Core.eval(m, :(JLWInterop.@register_opaque_carrier Model))
+        Core.eval(m, :(JLWInterop.@register_opaque_carrier Point))
+        # `@export_release_entrypoints` now also emits `jlw_free_opaque`, so the
+        # opaque handle is released on the same opt-in as the other carriers.
+        Core.eval(m, :(JLWInterop.@export_release_entrypoints))
+        @test isdefined(m, :jlw_free_opaque)
+        free_opaque(ptr) = Core.eval(m, :(jlw_free_opaque($ptr)))
+
+        Model = Core.eval(m, :Model)
+        Point = Core.eval(m, :Point)
+
+        # The carrier is a distinct struct, and the return carrier matches.
+        @test Core.eval(m, :(JLWInterop.carrier_type(Model))) === COpaque
+        @test Core.eval(m, :(JLWInterop.carrier_return_type(Model))) === COpaque
+
+        # A mutable object round-trips by identity; releasing (through the
+        # macro-emitted entrypoint) drops the root. The number of active
+        # handles is the length of the internal registry — the count a library
+        # exposes for itself (there is no built-in entrypoint for it).
+        active() = length(JLWInterop.type_specific_free_func_map)
+        before = active()
+        obj = Core.eval(m, :(Model(7)))
+        c = Core.eval(m, :(JLWInterop.to_carrier($obj)))
+        @test c isa COpaque
+        @test c.ptr != C_NULL
+        @test active() == before + 1
+        @test Core.eval(m, :(JLWInterop.from_carrier(Model, $c))) === obj
+        free_opaque(c.ptr)
+        @test active() == before
+
+        # An immutable object round-trips by value.
+        pt = Core.eval(m, :(Point(1.0, 2.0)))
+        cp = Core.eval(m, :(JLWInterop.to_carrier($pt)))
+        @test cp isa COpaque
+        @test Core.eval(m, :(JLWInterop.from_carrier(Point, $cp))) == pt
+        free_opaque(cp.ptr)
+
+        # A null pointer is a safe no-op.
+        @test free_opaque(Ptr{Cvoid}(C_NULL)) === nothing
+
+        # End to end through an `@api` wrapper: the boundary returns
+        # `JLWResult{COpaque}` and accepts the carrier back as an argument.
+        Core.eval(m, :(make_model(id::Int64) = Model(id)))
+        Core.eval(m, :(JLWInterop.@api make_model(id::Int64)::Model))
+        Core.eval(m, :(model_id(model::Model) = Int64(model.id)))
+        Core.eval(m, :(JLWInterop.@api model_id(model::Model)::Int64))
+
+        r = Core.eval(m, :(ApiOpaque_make_model(Int64(42))))
+        @test iszero(r.status.code)
+        @test r.value isa COpaque
+        # Feed the handle back into a second entry point.
+        r2 = Core.eval(m, :(ApiOpaque_model_id($(r.value))))
+        @test iszero(r2.status.code)
+        @test r2.value == Int64(42)
+        free_opaque(r.value.ptr)
+    end
+
     @testset "@api kwargs and metadata" begin
         m = Module(:ApiTestD)
         Core.eval(m, :(using JLWInterop))
