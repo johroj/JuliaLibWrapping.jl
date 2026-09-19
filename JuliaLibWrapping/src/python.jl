@@ -942,63 +942,68 @@ class JLWError(RuntimeError):
 """
 
 # The owning handle wrapped around a `COpaque` return. It holds the pointer to
-# a Julia object kept alive across the boundary and releases it exactly once,
-# through the `jlw_free_opaque` entrypoint. A `weakref.finalize` makes the
-# release automatic — it runs when the handle is garbage-collected and again at
-# interpreter exit — while `free()` releases eagerly; the finalizer guarantees
-# the call happens at most once whichever way it is triggered. The finalizer
-# holds only the raw address (via the module-level `_free_opaque`), never the
-# handle, so it never keeps the handle alive. Emitted into `_lowlevel.py` only
-# when the ABI exports that entrypoint and carries a `COpaque` struct (see
+# a Julia object kept alive across the boundary and releases it (through the
+# `jlw_free_opaque` entrypoint) from its `__del__` when garbage-collected, or
+# eagerly via `free()`; a `_freed` flag guarantees the call happens at most once
+# whichever way it is triggered. `__del__` swallows exceptions so a handle still
+# live at interpreter shutdown — when `_lib`/`ctypes` may already be gone — does
+# not raise from finalization. Emitted into `_lowlevel.py` only when the ABI
+# exports that entrypoint and carries a `COpaque` struct (see
 # [`_write_bindings`](@ref)).
 const OPAQUE_DEFINITION = """
-def _free_opaque(ptr):
-    # Module-level so the finalizer captures only the raw address, never the
-    # Opaque instance (a reference back would keep it alive forever).
-    _lib.jlw_free_opaque(ctypes.c_void_p(ptr))
-
-
 class Opaque:
     \"\"\"Owning handle to a Julia object held behind an opaque pointer.
 
     The library returns a pointer that keeps a Julia object alive; this handle
-    owns it and releases it with `jlw_free_opaque`. Release is automatic: a
-    `weakref.finalize` frees the object when the handle is garbage-collected,
-    and again at interpreter exit. Call `free()` to release eagerly. Freeing
-    happens exactly once, however it is triggered.
+    owns it and releases it with `jlw_free_opaque`. Release is automatic: the
+    handle frees the object from its `__del__` when it is garbage-collected.
+    Call `free()` to release eagerly. Freeing happens at most once, however it
+    is triggered.
 
     Pass a handle back into the library wherever an opaque argument is expected;
     a raw integer address is accepted too.
     \"\"\"
 
-    __slots__ = ("_ptr", "_finalizer", "__weakref__")
+    __slots__ = ("_ptr", "_freed")
 
     def __init__(self, ptr):
         # `ptr` is an integer address, or None for a null handle, as ctypes
         # yields when reading a c_void_p field.
         self._ptr = ptr
-        # A null handle owns nothing, so it registers no finalizer.
-        self._finalizer = weakref.finalize(self, _free_opaque, ptr) if ptr else None
+        # A null handle owns nothing, so there is nothing to free.
+        self._freed = not ptr
 
     @property
     def ptr(self):
         \"\"\"The raw pointer address; raises if the handle has been freed.\"\"\"
-        if self._finalizer is not None and not self._finalizer.alive:
+        if self._freed:
             raise RuntimeError("Opaque handle has already been freed")
         return self._ptr
 
     @property
     def alive(self):
         \"\"\"Whether the handle still owns a live Julia object.\"\"\"
-        return self._finalizer is not None and self._finalizer.alive
+        return not self._freed
 
     def free(self):
         \"\"\"Release the underlying Julia object now. Idempotent.\"\"\"
-        if self._finalizer is not None:
-            self._finalizer()
+        if not self._freed:
+            # Mark freed first, so a raising call can never free twice.
+            self._freed = True
+            _lib.jlw_free_opaque(ctypes.c_void_p(self._ptr))
+
+    def __del__(self):
+        # Best-effort release on garbage collection. At interpreter shutdown
+        # module globals (`_lib`, `ctypes`) may already be torn down, so a
+        # still-live handle is swallowed rather than raising from __del__; the
+        # process is exiting, so its Julia root is reclaimed regardless.
+        try:
+            self.free()
+        except Exception:
+            pass
 
     def __bool__(self):
-        return self._finalizer is not None and self._finalizer.alive
+        return not self._freed
 
     @staticmethod
     def _ptr_of(x):
@@ -1047,10 +1052,6 @@ function _write_bindings(
     println(f, "import os")
     println(f, "import sys")
     println(f, "import pathlib")
-    if needs_opaque
-        # The Opaque handle frees itself through a weakref.finalize.
-        println(f, "import weakref")
-    end
     if needs_numpy
         # CArray helpers require numpy.
         println(f, "import numpy as np")

@@ -3676,10 +3676,9 @@ end
             write_wrapper(dest, abi)
 
             low = read(joinpath(path, "opaque_demo", "_lowlevel.py"), String)
-            @test occursin("import weakref", low)
             @test occursin("class Opaque:", low)
-            @test occursin("def _free_opaque(ptr):", low)
-            @test occursin("weakref.finalize(self, _free_opaque", low)
+            @test occursin("def __del__(self):", low)
+            @test occursin("_lib.jlw_free_opaque(ctypes.c_void_p(self._ptr))", low)
             @test occursin("_lib.jlw_free_opaque.restype", low)
             # The release entrypoint is bound on `_lib` but never exposed.
             @test !occursin("def jlw_free_opaque(", low)
