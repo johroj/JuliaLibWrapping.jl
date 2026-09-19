@@ -8,7 +8,9 @@ module opaque_gc
 # currently rooted; `model_size` and `model_sum` read an object back through
 # its handle (a liveness check, and a check that the stored data is intact);
 # and `force_gc` triggers a full Julia collection, which the smoke test uses to
-# prove rooted objects survive it unchanged. See `test/smoke.py`.
+# prove rooted objects survive it unchanged. An immutable `Point` is registered
+# too, so both storage branches (by-identity for mutable, `RefValue`-boxed for
+# immutable) are covered. See `test/smoke.py`.
 
 using JLWInterop
 
@@ -42,6 +44,27 @@ model_size(m::Model) = Int64(length(m.values))
 # result. For `make_model(n)` the payload is `1..n`, so this is `n(n+1)/2`.
 model_sum(m::Model) = sum(m.values; init = 0.0)
 @api model_sum(m::Model)::Float64
+
+# An *immutable* opaque type, registered alongside the mutable `Model` to cover
+# the other branch of the carrier's storage helpers: an immutable value is
+# boxed in a `RefValue` to be rooted (`_pointable_type`/`_maybe_ref`) and
+# unboxed on the way back (`_maybe_deref`), whereas a mutable object is rooted
+# by identity. `make_point`/`point_sum` do the minimal round trip — create,
+# hand out a COpaque, pass it back, recover the value — to exercise that path
+# end to end.
+struct Point
+    x::Float64
+    y::Float64
+end
+@register_opaque_carrier Point
+
+make_point(x::Float64, y::Float64) = Point(x, y)
+@api make_point(x::Float64, y::Float64)::Point
+
+# Recover both fields (as their sum) from a handle passed back in: a nonzero,
+# field-dependent value proves the immutable struct survived the round trip.
+point_sum(p::Point) = p.x + p.y
+@api point_sum(p::Point)::Float64
 
 """
     num_active_opaques()::Int64

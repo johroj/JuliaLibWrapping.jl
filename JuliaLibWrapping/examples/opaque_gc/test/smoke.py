@@ -19,6 +19,8 @@ from opaque_gc_py import (
     make_model,
     model_size,
     model_sum,
+    make_point,
+    point_sum,
     num_active_opaques,
     force_gc,
     Opaque,
@@ -129,6 +131,24 @@ def test_freed_object_is_collectable_after_gc():
     assert num_active_opaques() == 0
 
 
+def test_immutable_struct_round_trips():
+    # `Point` is immutable, so it takes the RefValue-boxed branch of the
+    # carrier's storage helpers (the mutable `Model` covers the by-identity
+    # branch). This is the minimal check: create it, hand the opaque handle
+    # back to Julia, and recover its value — unchanged, and still after a GC.
+    assert num_active_opaques() == 0
+    p = make_point(1.5, 2.25)
+    assert isinstance(p, Opaque)
+    assert num_active_opaques() == 1
+    assert point_sum(p) == 1.5 + 2.25
+
+    force_gc()
+    assert point_sum(p) == 1.5 + 2.25
+
+    p.free()
+    assert num_active_opaques() == 0
+
+
 def test_bulk_collection_returns_to_zero():
     assert num_active_opaques() == 0
 
@@ -187,6 +207,7 @@ if __name__ == "__main__":
     test_gc_frees_each_handle()
     test_objects_survive_forced_julia_gc()
     test_create_gc_retrieve_loop()
+    test_immutable_struct_round_trips()
     test_freed_object_is_collectable_after_gc()
     test_bulk_collection_returns_to_zero()
     test_explicit_free_is_idempotent()
