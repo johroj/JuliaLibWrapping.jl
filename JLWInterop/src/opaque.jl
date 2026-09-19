@@ -22,7 +22,7 @@ end
 # opaque handles currently rooted; a library that wants to expose that count
 # (e.g. to observe garbage collection from a foreign caller) can read this
 # registry from its own `@ccallable` — see `examples/opaque_gc`.
-const type_specific_free_func_map::Dict{Ptr{Cvoid}, Ptr{Cvoid}} = Dict{Ptr{Cvoid}, Ptr{Cvoid}}()
+const type_specific_free_func_map = Dict{Ptr{Cvoid}, Ptr{Cvoid}}()
 
 const opaque_storage_lock = Threads.SpinLock()
 
@@ -57,7 +57,7 @@ macro register_opaque_carrier(
 
     return quote
         # Create a global type-specific storage
-        const $type_specific_storage::Dict{Ptr{Cvoid}, _pointable_type($(esc(jltype)))} = Dict{Ptr{Cvoid}, _pointable_type($(esc(jltype)))}()
+        const $type_specific_storage = Dict{Ptr{Cvoid}, _pointable_type($(esc(jltype)))}()
 
         # A function for removing an index at position ind
         # from the type-specific global storage
