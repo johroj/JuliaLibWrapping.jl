@@ -1883,11 +1883,12 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         Core.eval(m, :(struct Point; x::Float64; y::Float64; end))
         Core.eval(m, :(JLWInterop.@register_opaque_carrier Model))
         Core.eval(m, :(JLWInterop.@register_opaque_carrier Point))
-        # `@export_release_entrypoints` now also emits `jlw_free_opaque`, so the
-        # opaque handle is released on the same opt-in as the other carriers.
-        Core.eval(m, :(JLWInterop.@export_release_entrypoints))
-        @test isdefined(m, :jlw_free_opaque)
-        free_opaque(ptr) = Core.eval(m, :(jlw_free_opaque($ptr)))
+        # Release goes through the internal `_free_opaque`; the `@ccallable
+        # jlw_free_opaque` that `@export_release_entrypoints` emits (which wraps
+        # exactly this call) is checked in the "release entrypoints" testset.
+        # Invoking the macro here too would define the same `@ccallable` C symbol
+        # a second time in one process, which errors on Julia 1.10.
+        free_opaque(ptr) = JLWInterop._free_opaque(ptr)
 
         Model = Core.eval(m, :Model)
         Point = Core.eval(m, :Point)
@@ -1896,10 +1897,10 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         @test Core.eval(m, :(JLWInterop.carrier_type(Model))) === COpaque
         @test Core.eval(m, :(JLWInterop.carrier_return_type(Model))) === COpaque
 
-        # A mutable object round-trips by identity; releasing (through the
-        # macro-emitted entrypoint) drops the root. The number of active
-        # handles is the length of the internal registry — the count a library
-        # exposes for itself (there is no built-in entrypoint for it).
+        # A mutable object round-trips by identity; releasing drops the root.
+        # The number of active handles is the length of the internal registry —
+        # the count a library exposes for itself (there is no built-in
+        # entrypoint for it).
         active() = length(JLWInterop.type_specific_free_func_map)
         before = active()
         obj = Core.eval(m, :(Model(7)))
@@ -2284,11 +2285,15 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
             Tuple{typeof(m.jlw_free), Ptr{Cvoid}}
         @test only(methods(m.jlw_free_strings)).sig ==
             Tuple{typeof(m.jlw_free_strings), Ptr{JLWInterop.CString{:owned}}, Int64}
+        @test only(methods(m.jlw_free_opaque)).sig ==
+            Tuple{typeof(m.jlw_free_opaque), Ptr{Cvoid}}
         # The functions accept malloc'd data.
         a = CStrArray{:owned}(["x", "y"])
         Core.eval(m, :(jlw_free_strings($(a.data), $(a.length))))
         p = Libc.malloc(16)
         Core.eval(m, :(jlw_free($p)))
+        # A null opaque handle is a safe no-op.
+        Core.eval(m, :(jlw_free_opaque(Ptr{Cvoid}(C_NULL))))
     end
 
     @testset "CNTuple carrier" begin
